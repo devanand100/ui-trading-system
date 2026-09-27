@@ -33,7 +33,8 @@ _EXAMPLE_PATH = os.path.join(_BASE_DIR, "configfile.ini.example")
 # Values that mean "the user never filled this in".
 _PLACEHOLDER_VALUES = {
     "", "YOUR_API_KEY", "YOUR_API_SECRET", "YOUR_USERNAME", "YOUR_PASSWORD",
-    "kite_api_key", "kite_api_secret",
+    "kite_api_key", "kite_api_secret", "YOUR_CLIENT_ID", "YOUR_DHAN_CLIENT_ID",
+    "YOUR_DHAN_ACCESS_TOKEN",
 }
 
 # Kite API keys are short lowercase alphanumeric tokens.
@@ -72,9 +73,11 @@ def _value_is_real(parser: configparser.ConfigParser, section: str, key: str) ->
 def is_config_complete() -> bool:
     """Check whether configfile.ini has real (non-placeholder) credentials.
 
-    Complete means: [kite_login_details] api_key/api_secret and [gatekeeper]
-    username/password all exist with non-placeholder values. Result is cached
-    on the file's mtime.
+    Complete means:
+    - [gatekeeper] username/password exist with non-placeholder values.
+    - If broker == 'dhan': [dhan_login_details] client_id/access_token are valid.
+    - If broker == 'kite': [kite_login_details] api_key/api_secret are valid.
+    Result is cached on the file's mtime.
 
     Returns:
         True when the config is usable and the wizard should be locked out.
@@ -89,15 +92,34 @@ def is_config_complete() -> bool:
             return bool(_completeness_cache["complete"])
 
     parser = _read_config()
-    complete = parser is not None and all(
-        _value_is_real(parser, section, key)
-        for section, key in (
-            ("kite_login_details", "api_key"),
-            ("kite_login_details", "api_secret"),
-            ("gatekeeper", "username"),
-            ("gatekeeper", "password"),
-        )
+    if parser is None:
+        return False
+
+    gatekeeper_ok = (
+        _value_is_real(parser, "gatekeeper", "username")
+        and _value_is_real(parser, "gatekeeper", "password")
     )
+    if not gatekeeper_ok:
+        return False
+
+    broker_name = "kite"
+    if parser.has_section("broker"):
+        broker_name = parser.get("broker", "name", fallback="kite").strip().lower()
+    elif parser.has_section("dhan_login_details") and _value_is_real(parser, "dhan_login_details", "client_id"):
+        broker_name = "dhan"
+
+    if broker_name == "dhan":
+        broker_ok = (
+            _value_is_real(parser, "dhan_login_details", "client_id")
+            and _value_is_real(parser, "dhan_login_details", "access_token")
+        )
+    else:
+        broker_ok = (
+            _value_is_real(parser, "kite_login_details", "api_key")
+            and _value_is_real(parser, "kite_login_details", "api_secret")
+        )
+
+    complete = broker_ok and gatekeeper_ok
 
     with _completeness_cache_lock:
         _completeness_cache["mtime"] = current_mtime
@@ -114,16 +136,26 @@ def _validate_form(form: dict) -> Optional[str]:
     Returns:
         An error message, or None when everything is valid.
     """
-    api_key = form.get("api_key", "").strip()
-    api_secret = form.get("api_secret", "").strip()
+    broker = form.get("broker", "dhan").strip().lower()
+    if broker == "dhan":
+        client_id = form.get("client_id", "").strip()
+        access_token = form.get("access_token", "").strip()
+        if not client_id or len(client_id) < 4:
+            return "Dhan Client ID is required (typically 10 digits)."
+        if not access_token or len(access_token) < 10:
+            return "Dhan Access Token is required."
+    else:
+        api_key = form.get("api_key", "").strip()
+        api_secret = form.get("api_secret", "").strip()
+        if not _API_KEY_RE.match(api_key):
+            return "Kite API key looks invalid — expected 8-32 alphanumeric characters."
+        if not _API_KEY_RE.match(api_secret):
+            return "Kite API secret looks invalid — expected 8-32 alphanumeric characters."
+
     username = form.get("username", "").strip()
     password = form.get("password", "")
     password_confirm = form.get("password_confirm", "")
 
-    if not _API_KEY_RE.match(api_key):
-        return "Kite API key looks invalid — expected 8-32 alphanumeric characters."
-    if not _API_KEY_RE.match(api_secret):
-        return "Kite API secret looks invalid — expected 8-32 alphanumeric characters."
     if not re.match(r"^[A-Za-z0-9_.-]{3,32}$", username):
         return "Dashboard username must be 3-32 characters (letters, digits, _ . -)."
     if len(password) < 8:
@@ -151,12 +183,20 @@ def _write_config(form: dict) -> None:
     if os.path.exists(_EXAMPLE_PATH):
         parser.read(_EXAMPLE_PATH)
 
-    for section in ("kite_login_details", "gatekeeper", "safety", "option_details", "others"):
+    for section in ("broker", "dhan_login_details", "kite_login_details", "gatekeeper", "safety", "option_details", "others"):
         if not parser.has_section(section):
             parser.add_section(section)
 
-    parser.set("kite_login_details", "api_key", form.get("api_key", "").strip())
-    parser.set("kite_login_details", "api_secret", form.get("api_secret", "").strip())
+    broker = form.get("broker", "dhan").strip().lower()
+    parser.set("broker", "name", broker)
+
+    if broker == "dhan":
+        parser.set("dhan_login_details", "client_id", form.get("client_id", "").strip())
+        parser.set("dhan_login_details", "access_token", form.get("access_token", "").strip())
+    else:
+        parser.set("kite_login_details", "api_key", form.get("api_key", "").strip())
+        parser.set("kite_login_details", "api_secret", form.get("api_secret", "").strip())
+
     parser.set("gatekeeper", "username", form.get("username", "").strip())
     parser.set("gatekeeper", "password", generate_password_hash(form.get("password", "")))
 

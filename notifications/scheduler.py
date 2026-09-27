@@ -284,42 +284,41 @@ def shutdown_scheduler() -> None:
         logger.info("Notification scheduler stopped")
 
 
+def _get_broker_client() -> Optional[Any]:
+    """Return an authenticated broker client adapter (Dhan or Kite)."""
+    try:
+        from broker_adapter import create_broker_adapter
+        return create_broker_adapter()
+    except Exception as exc:
+        logger.error("Failed to create broker adapter: %s", exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
-# Job: Kite login check (9:20 AM IST weekdays)
+# Job: Broker login check (9:20 AM IST weekdays)
 # ---------------------------------------------------------------------------
 
 
 def _job_kite_login_check() -> None:
-    """Check that the main Kite account has a valid session at 9:20 AM IST.
+    """Check that the active broker account has a valid session at 9:20 AM IST.
 
-    Reads the stored access token from instruments.db and calls kite.profile()
-    to verify the session is active. Dispatches a KITE_LOGIN_CHECK notification
-    if the token is missing or the API call fails.
+    Calls broker.profile() to verify the session is active. Dispatches a
+    KITE_LOGIN_CHECK notification if credentials are missing or the API call fails.
 
     Never raises — all exceptions are caught and logged.
     """
-    logger.info("Running KITE_LOGIN_CHECK job")
+    logger.info("Running broker session check job")
     try:
-        import instrument_cache
-        from kiteconnect import KiteConnect
-
-        access_token: Optional[str] = instrument_cache.get_kite_token()
-        if not access_token:
-            _notify_login_missing("No session token found on server")
+        broker = _get_broker_client()
+        if not broker:
+            _notify_login_missing("No active broker session or credentials found on server")
             return
 
-        api_key = _read_api_key()
-        if not api_key:
-            logger.error("KITE_LOGIN_CHECK: api_key not found in configfile.ini")
-            return
-
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
-        kite.profile()  # raises KiteException if token is invalid or expired
-        logger.info("KITE_LOGIN_CHECK: session valid at 9:20 AM IST")
+        broker.profile()
+        logger.info("Broker session valid at 9:20 AM IST")
 
     except Exception as exc:
-        logger.warning("KITE_LOGIN_CHECK: session check failed — %s", exc)
+        logger.warning("Broker session check failed — %s", exc)
         _notify_login_missing(str(exc))
 
 
@@ -365,21 +364,11 @@ def _job_early_exit_required() -> None:
 
         logger.info("EARLY_EXIT_REQUIRED: expiry detected for %s — checking positions", today_str)
 
-        import instrument_cache
-        from kiteconnect import KiteConnect
-
-        access_token: Optional[str] = instrument_cache.get_kite_token()
-        if not access_token:
-            logger.warning("EARLY_EXIT_REQUIRED: no access token — cannot check positions")
+        kite = _get_broker_client()
+        if not kite:
+            logger.warning("EARLY_EXIT_REQUIRED: no broker client available — cannot check positions")
             return
 
-        api_key = _read_api_key()
-        if not api_key:
-            logger.error("EARLY_EXIT_REQUIRED: api_key not found in configfile.ini")
-            return
-
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
         positions_data = kite.positions()
         net_positions: list[dict] = positions_data.get("net", [])
 
@@ -472,21 +461,10 @@ def _job_daily_pnl_summary() -> None:
     """
     logger.info("Running DAILY_PNL_SUMMARY job")
     try:
-        import instrument_cache
-        from kiteconnect import KiteConnect
-
-        access_token: Optional[str] = instrument_cache.get_kite_token()
-        if not access_token:
-            logger.warning("DAILY_PNL_SUMMARY: no access token — skipping")
+        kite = _get_broker_client()
+        if not kite:
+            logger.warning("DAILY_PNL_SUMMARY: no broker client available — skipping")
             return
-
-        api_key = _read_api_key()
-        if not api_key:
-            logger.error("DAILY_PNL_SUMMARY: api_key not found in configfile.ini")
-            return
-
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
 
         positions_data = kite.positions()
         net_positions: list[dict] = positions_data.get("net", [])
@@ -589,22 +567,12 @@ def _job_reconcile_journal() -> None:
     """
     logger.info("Running RECONCILE_JOURNAL job")
     try:
-        import instrument_cache
-        from kiteconnect import KiteConnect
         from trade_journal import reconcile_with_zerodha
 
-        access_token: Optional[str] = instrument_cache.get_kite_token()
-        if not access_token:
-            logger.warning("RECONCILE_JOURNAL: no access token — skipping")
+        kite = _get_broker_client()
+        if not kite:
+            logger.warning("RECONCILE_JOURNAL: no broker client available — skipping")
             return
-
-        api_key = _read_api_key()
-        if not api_key:
-            logger.error("RECONCILE_JOURNAL: api_key not found in configfile.ini")
-            return
-
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
 
         result = reconcile_with_zerodha(kite, date.today())
         logger.info(
@@ -744,25 +712,16 @@ def _job_nifty_margin_check() -> None:
     logger.info("Running NIFTY_MARGIN_CHECK job")
     try:
         import instrument_cache
-        from kiteconnect import KiteConnect
         from positions_lib import (
             get_all_nifty_instruments,
             get_next_expiry_date,
             get_nifty_positions_summary,
         )
 
-        access_token: Optional[str] = instrument_cache.get_kite_token()
-        if not access_token:
-            logger.warning("NIFTY_MARGIN_CHECK: no access token — skipping")
+        kite = _get_broker_client()
+        if not kite:
+            logger.warning("NIFTY_MARGIN_CHECK: no broker client available — skipping")
             return
-
-        api_key = _read_api_key()
-        if not api_key:
-            logger.error("NIFTY_MARGIN_CHECK: api_key missing in configfile.ini — skipping")
-            return
-
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
 
         # Determine next NIFTY expiry and how many trading days away it is
         all_nifty_instruments = get_all_nifty_instruments(kite)
@@ -873,25 +832,16 @@ def _job_nifty_delta_check() -> None:
     logger.info("Running NIFTY_DELTA_CHECK job")
     try:
         import instrument_cache
-        from kiteconnect import KiteConnect
         from positions_lib import (
             get_all_nifty_instruments,
             get_next_expiry_date,
             get_nifty_positions_summary,
         )
 
-        access_token: Optional[str] = instrument_cache.get_kite_token()
-        if not access_token:
-            logger.warning("NIFTY_DELTA_CHECK: no access token — skipping")
+        kite = _get_broker_client()
+        if not kite:
+            logger.warning("NIFTY_DELTA_CHECK: no broker client available — skipping")
             return
-
-        api_key = _read_api_key()
-        if not api_key:
-            logger.error("NIFTY_DELTA_CHECK: api_key missing in configfile.ini — skipping")
-            return
-
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
 
         all_nifty_instruments = get_all_nifty_instruments(kite)
         next_expiry_str: Optional[str] = get_next_expiry_date(all_nifty_instruments)
@@ -1025,25 +975,16 @@ def _job_nifty_itm_loss_check() -> None:
     logger.info("Running NIFTY_ITM_LOSS_CHECK job")
     try:
         import instrument_cache
-        from kiteconnect import KiteConnect
         from positions_lib import (
             get_all_nifty_instruments,
             get_next_expiry_date,
             get_nifty_positions_summary,
         )
 
-        access_token: Optional[str] = instrument_cache.get_kite_token()
-        if not access_token:
-            logger.warning("NIFTY_ITM_LOSS_CHECK: no access token — skipping")
+        kite = _get_broker_client()
+        if not kite:
+            logger.warning("NIFTY_ITM_LOSS_CHECK: no broker client available — skipping")
             return
-
-        api_key = _read_api_key()
-        if not api_key:
-            logger.error("NIFTY_ITM_LOSS_CHECK: api_key missing in configfile.ini — skipping")
-            return
-
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
 
         all_nifty_instruments = get_all_nifty_instruments(kite)
         next_expiry_str: Optional[str] = get_next_expiry_date(all_nifty_instruments)

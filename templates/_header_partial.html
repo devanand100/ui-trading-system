@@ -433,14 +433,16 @@
         var badge = document.getElementById('app-header-session-badge');
         var btn = document.getElementById('app-header-connect-btn');
         if (!badge) return;
+        var brokerName = (data.broker || 'kite').toUpperCase();
+        if (btn) btn.textContent = 'Connect ' + (brokerName === 'DHAN' ? 'Dhan' : 'Kite');
         if (data.authenticated) {
-          badge.textContent = '🟢 Connected';
+          badge.textContent = '🟢 ' + brokerName + ' Connected';
           badge.className = 'connected';
-          btn.style.display = 'none';
+          if (btn) btn.style.display = 'none';
         } else {
-          badge.textContent = '⚠ Disconnected';
+          badge.textContent = '⚠ ' + brokerName + ' Disconnected';
           badge.className = 'disconnected';
-          btn.style.display = 'inline-block';
+          if (btn) btn.style.display = 'inline-block';
         }
       })
       .catch(function() {
@@ -470,6 +472,10 @@
     fetch('/api/get_login_url')
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        if (data.broker === 'dhan') {
+          updateAppHeaderSession();
+          return;
+        }
         if (!data.login_url) return;
         var left = Math.round((screen.width - 520) / 2);
         var top = Math.round((screen.height - 680) / 2);
@@ -493,7 +499,7 @@
           }
         });
       })
-      .catch(function() { alert('Could not get Kite login URL. Please try again.'); });
+      .catch(function() { alert('Could not get login details. Please try again.'); });
   };
 
   // --- Notification panel ---
@@ -670,14 +676,15 @@
       .then(function(data) {
         var badge = document.getElementById('app-header-mode-badge');
         if (!badge || !data) return;
+        var brokerLabel = (data.broker || 'kite').toUpperCase();
         if (data.live_trading) {
-          badge.textContent = '🔴 LIVE';
+          badge.textContent = brokerLabel + ' 🔴 LIVE';
           badge.style.background = 'rgba(252,129,129,0.15)';
           badge.style.color = '#fc8181';
           badge.style.border = '1px solid rgba(252,129,129,0.4)';
-          badge.title = 'Live trading is ENABLED — orders are sent to Zerodha with real money.';
+          badge.title = 'Live trading is ENABLED — orders are sent to ' + brokerLabel + ' with real money.';
         } else {
-          badge.textContent = '🟡 DRY-RUN';
+          badge.textContent = brokerLabel + ' 🟡 DRY-RUN';
           badge.style.background = 'rgba(246,173,85,0.15)';
           badge.style.color = '#f6ad55';
           badge.style.border = '1px solid rgba(246,173,85,0.4)';

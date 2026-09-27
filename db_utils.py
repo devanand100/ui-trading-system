@@ -21,12 +21,29 @@ Usage for a module with its own ``database.py``::
         ...  # CREATE TABLE IF NOT EXISTS ...
 """
 
+import datetime
 import logging
 import sqlite3
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _SQLITE_BUSY_TIMEOUT_SECONDS = 5.0
+
+
+def _robust_convert_timestamp(val: bytes) -> Any:
+    val_str = val.decode("utf-8")
+    try:
+        return datetime.datetime.fromisoformat(val_str)
+    except Exception:
+        try:
+            return datetime.datetime.strptime(val_str.split(".")[0], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return val_str
+
+
+sqlite3.register_converter("timestamp", _robust_convert_timestamp)
+sqlite3.register_converter("TIMESTAMP", _robust_convert_timestamp)
 
 
 def connect_with_busy_timeout(db_path: str) -> sqlite3.Connection:

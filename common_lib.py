@@ -1009,20 +1009,22 @@ def reset_restrictions() -> dict:
 order_ids_completed = {}
 
 
-api_key= login_details['api_key']
-api_secret= login_details['api_secret']
 already_executing_order = 0
-
 already_updating_order = 0
 
-# Cooldown for order placement
-
-
-
-kite = MonitoredKite(KiteConnect(api_key=api_key))
-website="https://kite.trade/connect/login?api_key="+api_key
-print(website) # This is link used to show the website to get access token
-print("-------------------------")
+active_broker = config_obj.get("broker", "name", fallback="kite").strip().lower() if config_obj.has_section("broker") else "kite"
+if active_broker == "dhan":
+    from broker_adapter import create_broker_adapter
+    kite = MonitoredKite(create_broker_adapter(config=config_obj), account_id="main")
+    api_key = config_obj.get("dhan_login_details", "client_id", fallback="")
+    api_secret = ""
+else:
+    api_key = login_details.get('api_key', '')
+    api_secret = login_details.get('api_secret', '')
+    kite = MonitoredKite(KiteConnect(api_key=api_key))
+    website = "https://kite.trade/connect/login?api_key=" + api_key
+    print(website) # This is link used to show the website to get access token
+    print("-------------------------")
 
 # Persistence for script-generated orders
 # Using a global set (thread-safe for reads, GIL handles writes usually, but we are single process)

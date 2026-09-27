@@ -83,13 +83,27 @@ config_path = os.path.join(base_dir, "configfile.ini")
 config = configparser.ConfigParser()
 config.read(config_path)
 
+ACTIVE_BROKER = "kite"
+if "broker" in config:
+    ACTIVE_BROKER = config["broker"].get("name", "kite").strip().lower()
+elif "dhan_login_details" in config:
+    ACTIVE_BROKER = "dhan"
+
+if "dhan_login_details" in config:
+    dhan_client_id = config["dhan_login_details"].get("client_id", "")
+    dhan_access_token = config["dhan_login_details"].get("access_token", "")
+else:
+    dhan_client_id = ""
+    dhan_access_token = ""
+
 if "kite_login_details" in config:
     kite_api_key = config["kite_login_details"]["api_key"]
     kite_api_secret = config["kite_login_details"]["api_secret"]
 else:
     kite_api_key = "kite_api_key"
     kite_api_secret = "kite_api_secret"
-    logging.error("kite_login_details not found in configfile.ini")
+    if ACTIVE_BROKER == "kite":
+        logging.error("kite_login_details not found in configfile.ini")
 
 # Gatekeeper Authentication
 if "gatekeeper" in config:
@@ -542,18 +556,28 @@ def _startup_auto_sync_if_needed() -> None:
     try:
         if not instrument_cache.needs_sync():
             return
-        stored_token = instrument_cache.get_kite_token()
-        if not stored_token:
-            logging.info(
-                "[startup] instruments table needs sync but no stored Kite "
-                "token is available yet — will sync automatically on first login."
-            )
-            return
+        if ACTIVE_BROKER == "dhan":
+            if not dhan_access_token:
+                logging.info("[startup] Dhan access token missing from configfile.ini.")
+                return
+            stored_token = dhan_access_token
+        else:
+            stored_token = instrument_cache.get_kite_token()
+            if not stored_token:
+                logging.info(
+                    "[startup] instruments table needs sync but no stored Kite "
+                    "token is available yet — will sync automatically on first login."
+                )
+                return
 
         def _run_sync() -> None:
             try:
-                kite = MonitoredKite(KiteConnect(api_key=kite_api_key), account_id="main")
-                kite.set_access_token(stored_token)
+                if ACTIVE_BROKER == "dhan":
+                    from broker_adapter import create_broker_adapter
+                    kite = create_broker_adapter(config=config)
+                else:
+                    kite = MonitoredKite(KiteConnect(api_key=kite_api_key), account_id="main")
+                    kite.set_access_token(stored_token)
                 if _safe_sync_instruments(kite):
                     logging.info("[startup] background instrument sync completed successfully")
                 else:
@@ -565,7 +589,7 @@ def _startup_auto_sync_if_needed() -> None:
                 logging.exception("[startup] background instrument sync failed")
 
         threading.Thread(target=_run_sync, name="startup-instrument-sync", daemon=True).start()
-        logging.info("[startup] instruments table empty — background sync started using stored token")
+        logging.info("[startup] instruments table empty — background sync started using %s", ACTIVE_BROKER)
     except Exception as exc:  # noqa: BLE001
         logging.error("[startup] auto-sync check failed: %s", exc)
 
@@ -612,16 +636,13 @@ index_template = """
 
 
 def get_kite_client():
-    """Returns a monitored kite client object.
+    """Returns the active broker client adapter (Dhan or Kite).
 
-    Returns:
-        MonitoredKite: A proxy around KiteConnect that records every API call
-        to the shared API monitor store (visible at /api-monitor).
+    Named get_kite_client for backward-compatibility with all existing consumers.
     """
-    kite = MonitoredKite(KiteConnect(api_key=kite_api_key), account_id="main")
-    if "access_token" in session:
-        kite.set_access_token(session["access_token"])
-    return kite
+    from broker_adapter import create_broker_adapter
+    session_data = dict(session) if session else {}
+    return create_broker_adapter(config=config, session_data=session_data)
 
 
 @app.route("/")
@@ -648,8 +669,8 @@ def get_token_for_script(user_provided_token=None):
     return None
 
 
-def get_authenticated_kite_client(data: dict) -> KiteConnect:
-    """Return an authenticated KiteConnect client using data or session.
+def get_authenticated_kite_client(data: dict = None) -> Any:
+    """Return an authenticated broker client (Dhan or Kite) using data or session.
     
     Tries request_token from data first (and persists to session), 
     then falls back to session access_token.
@@ -658,12 +679,23 @@ def get_authenticated_kite_client(data: dict) -> KiteConnect:
         data: Dictionary which may contain 'request_token'.
         
     Returns:
-        KiteConnect: An authenticated client.
+        BaseBrokerAdapter | KiteConnect: An authenticated client.
         
     Raises:
         RuntimeError: If no authentication is available.
     """
-    request_token = data.get("request_token")
+    if ACTIVE_BROKER == "dhan":
+        token = (data.get("request_token") if data else None) or session.get("access_token") or dhan_access_token
+        if not token:
+            raise RuntimeError("Authentication required. Please configure Dhan access token in configfile.ini.")
+        if session is not None:
+            session["access_token"] = token
+        from broker_adapter import create_broker_adapter
+        session_data = dict(session) if session else {}
+        session_data["dhan_access_token"] = token
+        return create_broker_adapter(config=config, session_data=session_data)
+
+    request_token = data.get("request_token") if data else None
     kite = KiteConnect(api_key=kite_api_key)
     
     if request_token:
@@ -1530,29 +1562,40 @@ def get_all_strikes():
 
 @app.route("/api/trading_mode")
 def trading_mode():
-    """Report whether order placement is live or dry-run (simulated).
+    """Report whether order placement is live or dry-run (simulated) and active broker.
 
     Drives the LIVE / DRY-RUN badge in the global header so the trading mode
     is always visible on every dashboard page.
 
     Returns:
-        JSON with 'live_trading' boolean from configfile.ini [safety].
+        JSON with 'live_trading' boolean and 'broker' name ('dhan' or 'kite').
     """
     import common_lib
-    return jsonify({"live_trading": common_lib.is_live_trading_enabled()})
+    return jsonify({
+        "live_trading": common_lib.is_live_trading_enabled(),
+        "broker": ACTIVE_BROKER,
+    })
 
 
 @app.route("/api/session_status")
 def session_status():
-    """Check if a valid Kite session exists by probing the API.
+    """Check if a valid broker session exists by probing the API.
 
     Delegates to _probe_kite_session() which caches successful results for
     10 seconds. Failed probes are never cached. Clears the session token on
     definitive auth failures so all pages show the correct disconnected state.
 
     Returns:
-        JSON with 'authenticated' boolean.
+        JSON with 'authenticated' boolean and 'broker' name.
     """
+    if ACTIVE_BROKER == "dhan":
+        token = session.get("access_token") or dhan_access_token
+        if not token:
+            return jsonify({"authenticated": False, "broker": "dhan"})
+        session["access_token"] = token
+        authenticated, is_auth_failure = _probe_kite_session(token)
+        return jsonify({"authenticated": authenticated, "broker": "dhan"})
+
     if "access_token" not in session and session.get("app_authenticated"):
         saved_token = _get_restored_kite_token()
         if saved_token:
@@ -1561,19 +1604,16 @@ def session_status():
 
     if "access_token" not in session:
         logging.info("[SESSION_STATUS] No access_token in session.")
-        return jsonify({"authenticated": False})
+        return jsonify({"authenticated": False, "broker": "kite"})
 
     authenticated, is_auth_failure = _probe_kite_session(session["access_token"])
 
     if not authenticated and is_auth_failure:
-        # Definitive auth rejection from Kite — clear the token so the UI
-        # shows the connect button. Network failures leave the token intact
-        # so the next poll retries automatically when connectivity recovers.
         logging.warning("[SESSION_STATUS] Clearing session token after auth failure.")
         session.pop("access_token", None)
         session.pop("request_token", None)
 
-    return jsonify({"authenticated": authenticated})
+    return jsonify({"authenticated": authenticated, "broker": "kite"})
 
 
 @app.route("/api/sync_session_token", methods=["GET"])
@@ -1639,9 +1679,11 @@ def establish_session():
 
 @app.route("/api/get_login_url")
 def get_login_url():
+    if ACTIVE_BROKER == "dhan":
+        return jsonify({"broker": "dhan", "login_url": None, "authenticated": True})
     try:
         kite = KiteConnect(api_key=kite_api_key)
-        return jsonify({"login_url": kite.login_url()})
+        return jsonify({"login_url": kite.login_url(), "broker": "kite"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -3402,7 +3444,10 @@ def get_nifty_positions():
     request_token = data.get("request_token")
     force_refresh: bool = bool(data.get("force_refresh", False))
 
-    if not request_token and "access_token" not in session:
+    if ACTIVE_BROKER == "dhan":
+        if "access_token" not in session and dhan_access_token:
+            session["access_token"] = dhan_access_token
+    elif not request_token and "access_token" not in session:
         return jsonify({"error": "Authentication required. Please connect Kite in the header."}), 401
 
     if force_refresh:
@@ -3439,7 +3484,10 @@ def get_nifty_next_expiry_positions():
     request_token = data.get("request_token")
     force_refresh: bool = bool(data.get("force_refresh", False))
 
-    if not request_token and "access_token" not in session:
+    if ACTIVE_BROKER == "dhan":
+        if "access_token" not in session and dhan_access_token:
+            session["access_token"] = dhan_access_token
+    elif not request_token and "access_token" not in session:
         return jsonify({"error": "Authentication required. Please connect Kite in the header."}), 401
 
     if force_refresh:
@@ -3524,7 +3572,10 @@ def get_sensex_positions():
     request_token = data.get("request_token")
     force_refresh: bool = bool(data.get("force_refresh", False))
 
-    if not request_token and "access_token" not in session:
+    if ACTIVE_BROKER == "dhan":
+        if "access_token" not in session and dhan_access_token:
+            session["access_token"] = dhan_access_token
+    elif not request_token and "access_token" not in session:
         return jsonify({"error": "Authentication required. Please connect Kite in the header."}), 401
 
     if force_refresh:
@@ -3570,7 +3621,10 @@ def get_sensex_next_expiry_positions():
     request_token = data.get("request_token")
     force_refresh: bool = bool(data.get("force_refresh", False))
 
-    if not request_token and "access_token" not in session:
+    if ACTIVE_BROKER == "dhan":
+        if "access_token" not in session and dhan_access_token:
+            session["access_token"] = dhan_access_token
+    elif not request_token and "access_token" not in session:
         return jsonify({"error": "Authentication required. Please connect Kite in the header."}), 401
 
     if force_refresh:
@@ -3690,31 +3744,7 @@ def start_expiry_trade():
 
     try:
         data = request.json or {}
-        request_token = data.get("request_token")
-
-        # Authenticate
-        base_kite = KiteConnect(api_key=kite_api_key)
-
-        if not request_token and "access_token" in session:
-            base_kite.set_access_token(session["access_token"])
-        elif request_token:
-            try:
-                auth_data = base_kite.generate_session(
-                    request_token, api_secret=kite_api_secret
-                )
-                base_kite.set_access_token(auth_data["access_token"])
-                _set_kite_session(auth_data["access_token"])
-            except Exception as e:
-                if "access_token" in session:
-                    base_kite.set_access_token(session["access_token"])
-                    logging.warning(f"Using existing session: {e}")
-                else:
-                    return jsonify({"success": False, "message": str(e)}), 400
-        else:
-            return jsonify({
-                "success": False,
-                "message": "Authentication required. Please connect Kite in the header."
-            }), 401
+        base_kite = get_authenticated_kite_client(data)
 
         kite = MonitoredKite(base_kite, account_id="main")
 

@@ -418,7 +418,8 @@ def sync_instruments(kite: Any) -> bool:  # type: ignore[type-arg]
 
 def _sync_instruments_locked(kite: Any) -> bool:  # type: ignore[type-arg]
     """Body of :func:`sync_instruments`, run while ``_sync_lock`` is held."""
-    logger.info("Starting instrument sync from Zerodha (atomic swap)...")
+    broker_name = getattr(kite, "broker_name", "broker").upper()
+    logger.info("Starting instrument sync from %s (atomic swap)...", broker_name)
     start_time = get_ist_now()
     records_synced = 0
     error_msg: Optional[str] = None
@@ -478,7 +479,7 @@ def _sync_instruments_locked(kite: Any) -> bool:  # type: ignore[type-arg]
             ]
             cursor.executemany(
                 """
-                INSERT INTO instruments_new (
+                INSERT OR REPLACE INTO instruments_new (
                     instrument_token, tradingsymbol, name, expiry,
                     strike, instrument_type, lot_size, segment, exchange, tick_size
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -952,7 +953,7 @@ def get_db_stats() -> Dict[str, Any]:
     total_count: int = cursor.fetchone()[0]
 
     cursor.execute("SELECT segment, COUNT(*) FROM instruments GROUP BY segment")
-    segment_counts: Dict[str, int] = dict(cursor.fetchall())
+    segment_counts: Dict[str, int] = {row[0]: row[1] for row in cursor.fetchall()}
 
     cursor.execute("SELECT * FROM instruments LIMIT 50")
     sample_rows = [dict(r) for r in cursor.fetchall()]

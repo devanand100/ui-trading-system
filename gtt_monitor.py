@@ -205,52 +205,27 @@ def _build_notification_payload(
 
 
 def _build_kite_client():
-    """Return an authenticated KiteConnect instance.
-
-    In a Flask request context (e.g. /gtt_monitor/debug, /gtt_monitor/check):
-    reads ``session["access_token"]`` — same token the rest of the app uses,
-    so it is always valid when the user is logged in.
-
-    In a background/scheduler context (no request context):
-    falls back to the token stored in instruments.db by _set_kite_session().
+    """Return an authenticated broker adapter instance (Dhan or Kite).
 
     Returns:
-        KiteConnect instance with a valid access token set.
+        BaseBrokerAdapter instance with authentication configured.
 
     Raises:
-        RuntimeError: If api_key is not found or no token is available.
+        RuntimeError: If authentication cannot be resolved.
     """
-    import configparser
-    from kiteconnect import KiteConnect
-
-    cfg = configparser.ConfigParser()
-    # configfile.ini lives in the same directory as this file (vibhu/)
-    cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "configfile.ini"))
-    api_key: str = cfg.get("kite_login_details", "api_key", fallback="").strip()
-    if not api_key:
-        raise RuntimeError("api_key not found in configfile.ini [kite_login_details]")
-
-    access_token: str | None = None
-
-    # Try Flask session first (only available during a request)
+    from broker_adapter import create_broker_adapter
+    session_data = {}
     try:
         from flask import has_request_context, session as flask_session
         if has_request_context():
-            access_token = flask_session.get("access_token")
+            session_data = dict(flask_session)
     except ImportError:
         pass
 
-    # Fall back to the token persisted in instruments.db (used by scheduler jobs)
-    if not access_token:
-        import instrument_cache
-        access_token = instrument_cache.get_kite_token()
-
-    if not access_token:
-        raise RuntimeError("No Kite access token available — log in to Kite first")
-
-    kite = KiteConnect(api_key=api_key)
-    kite.set_access_token(access_token)
-    return kite
+    try:
+        return create_broker_adapter(session_data=session_data)
+    except Exception as exc:
+        raise RuntimeError(f"Could not build authenticated broker client: {exc}") from exc
 
 
 def run_gtt_monitor_check(*, force: bool = False) -> list[dict[str, Any]]:

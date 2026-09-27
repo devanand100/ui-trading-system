@@ -278,32 +278,17 @@ def scan_duplicate_orders(kite_client: Any) -> list[dict]:
 
 
 def _build_kite_client_from_db() -> Optional[Any]:
-    """Construct a fresh KiteConnect instance using the stored session token.
-
-    Follows the same pattern as other scheduler jobs: reads api_key from
-    configfile.ini and access_token from instruments.db.
+    """Construct an authenticated broker client instance using config / stored token.
 
     Returns:
-        Configured KiteConnect instance, or None if credentials are unavailable.
+        Configured broker adapter instance, or None if credentials are unavailable.
     """
-    import instrument_cache
-    from kiteconnect import KiteConnect
-
-    cfg = configparser.ConfigParser()
-    cfg.read(_CONFIG_PATH)
-    api_key = cfg.get("kite_login_details", "api_key", fallback="").strip()
-    if not api_key:
-        logger.error("_build_kite_client_from_db: api_key missing in configfile.ini")
+    try:
+        from broker_adapter import create_broker_adapter
+        return create_broker_adapter()
+    except Exception as exc:
+        logger.warning("_build_kite_client_from_db: could not build broker client — %s", exc)
         return None
-
-    access_token: Optional[str] = instrument_cache.get_kite_token()
-    if not access_token:
-        logger.warning("_build_kite_client_from_db: no stored access token")
-        return None
-
-    kite = KiteConnect(api_key=api_key)
-    kite.set_access_token(access_token)
-    return kite
 
 
 def check_and_notify_duplicates() -> None:

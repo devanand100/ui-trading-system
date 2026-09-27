@@ -87,25 +87,17 @@ def _save_config(config: dict[str, Any]) -> None:
 
 
 def _resolve_kite_client() -> Any | None:
-    """Return a usable KiteConnect client from session or stored token.
+    """Return a usable broker client from session or stored token.
 
     Returns:
-        Authenticated KiteConnect instance, or None if unavailable.
+        Authenticated broker adapter instance, or None if unavailable.
     """
     try:
-        import instrument_cache
-        from kiteconnect import KiteConnect
-        from common_lib import api_key as kite_api_key
-        from kite_api_monitor import MonitoredKite
-
-        token = session.get("access_token") or instrument_cache.get_kite_token()
-        if not token:
-            return None
-        client = MonitoredKite(KiteConnect(api_key=kite_api_key), account_id="main")
-        client.set_access_token(token)
-        return client
+        from broker_adapter import create_broker_adapter
+        session_data = dict(session) if session else {}
+        return create_broker_adapter(session_data=session_data)
     except Exception:
-        logger.exception("_resolve_kite_client: could not build kite client")
+        logger.exception("_resolve_kite_client: could not build broker client")
         return None
 
 

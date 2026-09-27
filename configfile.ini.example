@@ -1,3 +1,11 @@
+[broker]
+# Active broker: "dhan" or "kite"
+name = dhan
+
+[dhan_login_details]
+client_id = YOUR_DHAN_CLIENT_ID
+access_token = YOUR_DHAN_ACCESS_TOKEN
+
 [kite_login_details]
 api_key = YOUR_API_KEY
 api_secret = YOUR_API_SECRET

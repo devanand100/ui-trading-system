@@ -5,6 +5,19 @@ setup wizard writes it for you on first run; this page documents every key
 for manual editing. **Restart the app after any change** — most values are
 read once at startup.
 
+## `[broker]`
+
+| Key | Description |
+|-----|-------------|
+| `name` | Active broker backend: `dhan` (DhanHQ v2) or `kite` (Zerodha Kite Connect). Defaults to `dhan` if `[dhan_login_details]` is configured, or `kite`. |
+
+## `[dhan_login_details]`
+
+| Key | Description |
+|-----|-------------|
+| `client_id` | Dhan Client ID (from Dhan Profile / Web Console) |
+| `access_token` | DhanHQ v2 API Access Token (JWT format) |
+
 ## `[kite_login_details]`
 
 | Key | Description |
